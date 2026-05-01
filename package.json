@@ -9,9 +9,13 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "formidable": "^3.5.4",
+    "lucide-react": "^1.14.0",
     "next": "16.2.4",
+    "nodemailer": "^8.0.7",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "eslint": "^9",
