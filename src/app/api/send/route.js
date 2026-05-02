@@ -1,34 +1,46 @@
 import { NextResponse } from 'next/server';
-import nodemailer from 'nodemailer';
+import { google } from 'googleapis';
+import { getToken } from 'next-auth/jwt';
 
-export async function POST(request) {
+// Helper to encode to base64url format
+function encodeMessage(to, subject, body) {
+  const str = [
+    'Content-Type: text/plain; charset="UTF-8"\n',
+    'MIME-Version: 1.0\n',
+    'Content-Transfer-Encoding: 7bit\n',
+    `To: ${to}\n`,
+    `Subject: ${subject}\n\n`,
+    body
+  ].join('');
+  return Buffer.from(str).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+export async function POST(req) {
   try {
-    const { template, subject, recipients, userEmail, appPassword } = await request.json();
+    // Retrieve the NextAuth token to get the Google access token
+    const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
+    if (!token || !token.accessToken) {
+      return NextResponse.json({ error: 'Unauthorized: Please sign in with Google' }, { status: 401 });
+    }
+
+    const { template, subject, recipients } = await req.json();
 
     if (!template || !recipients || !Array.isArray(recipients) || recipients.length === 0) {
       return NextResponse.json({ error: 'Missing template or recipients' }, { status: 400 });
     }
 
-    // Use environment variables for credentials, fallback to request body for flexibility during MVP testing
-    const emailUser = process.env.GMAIL_USER || userEmail;
-    const emailPass = process.env.GMAIL_PASS || appPassword;
-
-    if (!emailUser || !emailPass) {
-      return NextResponse.json({ error: 'Missing Gmail credentials. Configure GMAIL_USER and GMAIL_PASS environment variables, or provide them.' }, { status: 400 });
+    // Safety limit constraint
+    if (recipients.length > 50) {
+      return NextResponse.json({ error: 'Safety Limit Exceeded: Max 50 emails per request' }, { status: 400 });
     }
 
-    // Configure Nodemailer transporter
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: emailUser,
-        pass: emailPass,
-      },
-    });
+    // Initialize the Gmail API client
+    const oauth2Client = new google.auth.OAuth2();
+    oauth2Client.setCredentials({ access_token: token.accessToken });
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
     const results = [];
 
-    // Helper to replace placeholders
     const replacePlaceholders = (text, data) => {
       if (!text) return '';
       return text.replace(/\{\{(.*?)\}\}/g, (match, key) => {
@@ -37,13 +49,12 @@ export async function POST(request) {
       });
     };
 
-    // Send emails
-    for (const recipient of recipients) {
-      // It assumes the recipient data contains an 'Email' or 'email' field
-      const recipientEmail = recipient.Email || recipient.email;
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+    for (const recipient of recipients) {
+      const recipientEmail = recipient.Email || recipient.email;
       if (!recipientEmail) {
-        results.push({ email: 'Unknown', status: 'Failed', reason: 'No Email column found for this row' });
+        results.push({ email: 'Unknown', status: 'Failed', reason: 'No Email column found' });
         continue;
       }
 
@@ -51,22 +62,30 @@ export async function POST(request) {
       const personalizedBody = replacePlaceholders(template, recipient);
 
       try {
-        await transporter.sendMail({
-          from: emailUser,
-          to: recipientEmail,
-          subject: personalizedSubject,
-          text: personalizedBody, // MVP sends as plain text
+        const rawMessage = encodeMessage(recipientEmail, personalizedSubject, personalizedBody);
+        
+        await gmail.users.messages.send({
+          userId: 'me',
+          requestBody: {
+            raw: rawMessage,
+          },
         });
+        
         results.push({ email: recipientEmail, status: 'Success' });
-      } catch (sendError) {
-        console.error(`Failed to send to ${recipientEmail}:`, sendError);
-        results.push({ email: recipientEmail, status: 'Failed', reason: sendError.message });
+        
+        // Apply 1.5 seconds delay between sends
+        await delay(1500);
+
+      } catch (error) {
+        console.error(`Failed to send to ${recipientEmail}:`, error);
+        results.push({ email: recipientEmail, status: 'Failed', reason: error.message });
       }
     }
 
     return NextResponse.json({ results }, { status: 200 });
+
   } catch (error) {
-    console.error('Error sending emails:', error);
-    return NextResponse.json({ error: 'Internal server error while sending emails' }, { status: 500 });
+    console.error('Error in send API:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

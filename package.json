@@ -9,10 +9,10 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "formidable": "^3.5.4",
+    "googleapis": "^171.4.0",
     "lucide-react": "^1.14.0",
     "next": "16.2.4",
-    "nodemailer": "^8.0.7",
+    "next-auth": "^4.24.14",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "xlsx": "^0.18.5"

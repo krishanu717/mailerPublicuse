@@ -1,10 +1,14 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { UploadCloud, Send, FileSpreadsheet, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { UploadCloud, Send, FileSpreadsheet, CheckCircle, AlertCircle, Loader2, LogIn, LogOut } from 'lucide-react';
+import { useSession, signIn, signOut } from "next-auth/react";
+import * as XLSX from 'xlsx';
 import styles from './page.module.css';
 
 export default function Home() {
+  const { data: session, status: sessionStatus } = useSession();
+  
   const [data, setData] = useState([]);
   const [columns, setColumns] = useState([]);
   const [selectedRows, setSelectedRows] = useState(new Set());
@@ -12,7 +16,7 @@ export default function Home() {
   const [subject, setSubject] = useState('Welcome to {{Company}}');
   const [isUploading, setIsUploading] = useState(false);
   const [isSending, setIsSending] = useState(false);
-  const [status, setStatus] = useState(null); // { type: 'success' | 'error' | 'info', message: string }
+  const [status, setStatus] = useState(null); 
   const fileInputRef = useRef(null);
 
   const handleFileUpload = async (e) => {
@@ -21,36 +25,40 @@ export default function Home() {
 
     setIsUploading(true);
     setStatus(null);
-    const formData = new FormData();
-    formData.append('file', file);
 
     try {
-      const response = await fetch('/api/parse', {
-        method: 'POST',
-        body: formData,
-      });
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        try {
+          const bstr = evt.target.result;
+          const workbook = XLSX.read(bstr, { type: 'binary' });
+          const sheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[sheetName];
+          const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
 
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.error || 'Failed to parse file');
-      }
-
-      if (result.data && result.data.length > 0) {
-        setData(result.data);
-        setColumns(Object.keys(result.data[0]));
-        // Select all by default
-        setSelectedRows(new Set(result.data.map((_, i) => i)));
-        setStatus({ type: 'success', message: `Successfully loaded ${result.data.length} rows.` });
-      } else {
-        throw new Error('File is empty or invalid format');
-      }
+          if (jsonData && jsonData.length > 0) {
+            setData(jsonData);
+            setColumns(Object.keys(jsonData[0]));
+            setSelectedRows(new Set(jsonData.map((_, i) => i)));
+            setStatus({ type: 'success', message: `Successfully loaded ${jsonData.length} rows.` });
+          } else {
+            throw new Error('File is empty or invalid format');
+          }
+        } catch (err) {
+          setStatus({ type: 'error', message: 'Error parsing file: ' + err.message });
+        } finally {
+          setIsUploading(false);
+          if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+      };
+      reader.onerror = () => {
+        setStatus({ type: 'error', message: 'Failed to read file' });
+        setIsUploading(false);
+      };
+      reader.readAsBinaryString(file);
     } catch (error) {
       setStatus({ type: 'error', message: error.message });
-    } finally {
       setIsUploading(false);
-      // Reset input so the same file can be uploaded again if needed
-      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -87,6 +95,11 @@ export default function Home() {
   const handleSend = async () => {
     if (selectedRows.size === 0) {
       setStatus({ type: 'error', message: 'Please select at least one recipient.' });
+      return;
+    }
+
+    if (selectedRows.size > 50) {
+      setStatus({ type: 'error', message: 'Safety Limit Exceeded: Max 50 emails per request. Please select fewer rows.' });
       return;
     }
 
@@ -128,164 +141,219 @@ export default function Home() {
     }
   };
 
+  if (sessionStatus === "loading") {
+    return (
+      <div className={styles.container} style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
+        <Loader2 className="spinner" size={40} />
+      </div>
+    );
+  }
+
   return (
     <div className={styles.container}>
       <header className={styles.header}>
-        <h1>Mailer</h1>
-        <p>Upload data, write a template, and send personalized emails via Gmail.</p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+          <div>
+            <h1>Mailer</h1>
+            <p>Send personalized emails directly from your Gmail account.</p>
+          </div>
+          <div>
+            {session ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+                <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                  {session.user?.email}
+                </span>
+                <button onClick={() => signOut()} className={`${styles.button} ${styles.buttonSecondary}`} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                  <LogOut size={16} /> Logout
+                </button>
+              </div>
+            ) : (
+              <button onClick={() => signIn('google')} className={styles.button} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                <LogIn size={16} /> Sign in with Google
+              </button>
+            )}
+          </div>
+        </div>
       </header>
 
-      {/* Upload Section */}
-      <section className={styles.card}>
-        <div 
-          className={styles.uploadArea} 
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <UploadCloud className={styles.uploadIcon} />
-          {isUploading ? (
-            <p>Uploading and parsing...</p>
-          ) : (
-            <>
-              <h3>Upload Excel or CSV File</h3>
-              <p>Click to select or drag and drop</p>
-            </>
-          )}
-          <input 
-            type="file" 
-            ref={fileInputRef} 
-            onChange={handleFileUpload} 
-            accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel"
-            className={styles.fileInput} 
-          />
-        </div>
-        
-        {status && (
-          <div className={`${styles.statusMessage} ${
-            status.type === 'error' ? styles.statusError : 
-            status.type === 'success' ? styles.statusSuccess : styles.statusInfo
-          }`}>
-            {status.type === 'error' && <AlertCircle size={16} style={{display: 'inline', marginRight: 8, verticalAlign: 'text-bottom'}}/>}
-            {status.type === 'success' && <CheckCircle size={16} style={{display: 'inline', marginRight: 8, verticalAlign: 'text-bottom'}}/>}
-            {status.message}
-          </div>
-        )}
-      </section>
-
-      {/* Data Table Section */}
-      {data.length > 0 && (
-        <section className={styles.card}>
-          <div className={styles.cardTitle}>
-            <FileSpreadsheet size={24} />
-            Recipients Data
-          </div>
-          
-          <div className={styles.tableWrapper}>
-            <table className={styles.dataTable}>
-              <thead>
-                <tr>
-                  <th>
-                    <input 
-                      type="checkbox" 
-                      className={styles.checkbox}
-                      checked={selectedRows.size === data.length && data.length > 0}
-                      onChange={toggleAll}
-                    />
-                  </th>
-                  {columns.map((col, idx) => (
-                    <th key={idx}>{col}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {data.slice(0, 100).map((row, idx) => (
-                  <tr key={idx}>
-                    <td>
-                      <input 
-                        type="checkbox" 
-                        className={styles.checkbox}
-                        checked={selectedRows.has(idx)}
-                        onChange={() => toggleRowSelection(idx)}
-                      />
-                    </td>
-                    {columns.map((col, colIdx) => (
-                      <td key={colIdx}>{row[col]}</td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {data.length > 100 && (
-            <p style={{marginTop: 15, fontSize: '0.85rem', color: 'var(--text-secondary)'}}>
-              Showing first 100 rows. Total rows: {data.length}.
+      {!session ? (
+        <section className={styles.card} style={{ textAlign: 'center', padding: '50px 20px' }}>
+          <h2>Welcome to Mailer</h2>
+          <p style={{ color: 'var(--text-secondary)', marginBottom: '30px' }}>
+            Please sign in with your Google account to authorize sending emails.
+          </p>
+          <button onClick={() => signIn('google')} className={styles.button} style={{ margin: '0 auto', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+            <LogIn size={20} /> Sign in with Google
+          </button>
+        </section>
+      ) : (
+        <>
+          <div style={{ backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '15px', marginBottom: '20px', display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+            <AlertCircle size={20} style={{ color: 'var(--text-secondary)', flexShrink: 0, marginTop: '2px' }} />
+            <p style={{ fontSize: '0.9rem', margin: 0, color: 'var(--text-secondary)' }}>
+              <strong>Safety Warning:</strong> Emails are sent using your Gmail account. Daily limits apply (~500/day). Please limit batches to 50 emails per request.
             </p>
-          )}
-        </section>
-      )}
-
-      {/* Template & Preview Section */}
-      <div className={styles.grid}>
-        {/* Editor */}
-        <section className={styles.card}>
-          <h2 className={styles.cardTitle}>Email Template</h2>
-          
-          <div className={styles.formGroup}>
-            <label>Subject Line</label>
-            <input 
-              type="text" 
-              className={styles.input}
-              value={subject}
-              onChange={(e) => setSubject(e.target.value)}
-              placeholder="Enter subject with {{Placeholders}}"
-            />
           </div>
 
-          <div className={styles.formGroup}>
-            <label>Email Body</label>
-            <textarea 
-              className={styles.textarea}
-              value={template}
-              onChange={(e) => setTemplate(e.target.value)}
-              placeholder="Write your email body here. Use {{ColumnName}} to insert data."
-            />
-          </div>
-
-          <p style={{fontSize: '0.85rem', color: 'var(--text-secondary)'}}>
-            Available Placeholders: {columns.length > 0 ? columns.map(c => `{{${c}}}`).join(', ') : 'Upload data to see placeholders'}
-          </p>
-        </section>
-
-        {/* Preview */}
-        <section className={styles.card}>
-          <h2 className={styles.cardTitle}>Live Preview</h2>
-          <p style={{fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '15px'}}>
-            Previewing row {selectedRows.size > 0 ? Array.from(selectedRows)[0] + 1 : 1}
-          </p>
-          
-          <div className={styles.previewBox}>
-            <div className={styles.previewSubject}>
-              Subject: {replacePlaceholders(subject, previewData) || 'No subject'}
-            </div>
-            <div className={styles.previewBody}>
-              {replacePlaceholders(template, previewData) || 'No content'}
-            </div>
-          </div>
-
-          <div style={{marginTop: '20px'}}>
-            <button 
-              className={styles.button} 
-              onClick={handleSend}
-              disabled={isSending || selectedRows.size === 0}
+          {/* Upload Section */}
+          <section className={styles.card}>
+            <div 
+              className={styles.uploadArea} 
+              onClick={() => fileInputRef.current?.click()}
             >
-              {isSending ? (
-                <><Loader2 className="spinner" size={20} /> Sending...</>
+              <UploadCloud className={styles.uploadIcon} />
+              {isUploading ? (
+                <p>Uploading and parsing...</p>
               ) : (
-                <><Send size={20} /> Send {selectedRows.size} Emails</>
+                <>
+                  <h3>Upload Excel or CSV File</h3>
+                  <p>Click to select or drag and drop</p>
+                </>
               )}
-            </button>
-          </div>
-        </section>
-      </div>
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                onChange={handleFileUpload} 
+                accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel"
+                className={styles.fileInput} 
+              />
+            </div>
+            
+            {status && (
+              <div className={`${styles.statusMessage} ${
+                status.type === 'error' ? styles.statusError : 
+                status.type === 'success' ? styles.statusSuccess : styles.statusInfo
+              }`}>
+                {status.type === 'error' && <AlertCircle size={16} style={{display: 'inline', marginRight: 8, verticalAlign: 'text-bottom'}}/>}
+                {status.type === 'success' && <CheckCircle size={16} style={{display: 'inline', marginRight: 8, verticalAlign: 'text-bottom'}}/>}
+                {status.message}
+              </div>
+            )}
+          </section>
+
+          {/* Data Table Section */}
+          {data.length > 0 && (
+            <section className={styles.card}>
+              <div className={styles.cardTitle}>
+                <FileSpreadsheet size={24} />
+                Recipients Data
+              </div>
+              
+              <div className={styles.tableWrapper}>
+                <table className={styles.dataTable}>
+                  <thead>
+                    <tr>
+                      <th>
+                        <input 
+                          type="checkbox" 
+                          className={styles.checkbox}
+                          checked={selectedRows.size === data.length && data.length > 0}
+                          onChange={toggleAll}
+                        />
+                      </th>
+                      {columns.map((col, idx) => (
+                        <th key={idx}>{col}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.slice(0, 100).map((row, idx) => (
+                      <tr key={idx}>
+                        <td>
+                          <input 
+                            type="checkbox" 
+                            className={styles.checkbox}
+                            checked={selectedRows.has(idx)}
+                            onChange={() => toggleRowSelection(idx)}
+                          />
+                        </td>
+                        {columns.map((col, colIdx) => (
+                          <td key={colIdx}>{row[col]}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ marginTop: 15, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                  Selected {selectedRows.size} of {data.length} rows. {data.length > 100 ? 'Showing first 100 rows.' : ''}
+                </p>
+                <button className={`${styles.button} ${styles.buttonSecondary}`} onClick={toggleAll} style={{ padding: '6px 12px', fontSize: '0.85rem' }}>
+                  {selectedRows.size === data.length ? 'Deselect All' : 'Select All'}
+                </button>
+              </div>
+            </section>
+          )}
+
+          {/* Template & Preview Section */}
+          {data.length > 0 && (
+            <div className={styles.grid}>
+              {/* Editor */}
+              <section className={styles.card}>
+                <h2 className={styles.cardTitle}>Email Template</h2>
+                
+                <div className={styles.formGroup}>
+                  <label>Subject Line</label>
+                  <input 
+                    type="text" 
+                    className={styles.input}
+                    value={subject}
+                    onChange={(e) => setSubject(e.target.value)}
+                    placeholder="Enter subject with {{Placeholders}}"
+                  />
+                </div>
+
+                <div className={styles.formGroup}>
+                  <label>Email Body</label>
+                  <textarea 
+                    className={styles.textarea}
+                    value={template}
+                    onChange={(e) => setTemplate(e.target.value)}
+                    placeholder="Write your email body here. Use {{ColumnName}} to insert data."
+                  />
+                </div>
+
+                <p style={{fontSize: '0.85rem', color: 'var(--text-secondary)'}}>
+                  Available Placeholders: {columns.length > 0 ? columns.map(c => `{{${c}}}`).join(', ') : 'Upload data to see placeholders'}
+                </p>
+              </section>
+
+              {/* Preview */}
+              <section className={styles.card}>
+                <h2 className={styles.cardTitle}>Live Preview</h2>
+                <p style={{fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '15px'}}>
+                  Previewing row {selectedRows.size > 0 ? Array.from(selectedRows)[0] + 1 : 1}
+                </p>
+                
+                <div className={styles.previewBox}>
+                  <div className={styles.previewSubject}>
+                    Subject: {replacePlaceholders(subject, previewData) || 'No subject'}
+                  </div>
+                  <div className={styles.previewBody}>
+                    {replacePlaceholders(template, previewData) || 'No content'}
+                  </div>
+                </div>
+
+                <div style={{marginTop: '20px'}}>
+                  <button 
+                    className={styles.button} 
+                    onClick={handleSend}
+                    disabled={isSending || selectedRows.size === 0}
+                    style={{ width: '100%', display: 'inline-flex', justifyContent: 'center', alignItems: 'center', gap: '5px' }}
+                  >
+                    {isSending ? (
+                      <><Loader2 className="spinner" size={20} /> Sending...</>
+                    ) : (
+                      <><Send size={20} /> Send {selectedRows.size} Emails</>
+                    )}
+                  </button>
+                </div>
+              </section>
+            </div>
+          )}
+        </>
+      )}
 
       <style jsx global>{`
         .spinner {
