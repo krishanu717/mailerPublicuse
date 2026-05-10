@@ -23,7 +23,7 @@ export async function POST(req) {
       return NextResponse.json({ error: 'Unauthorized: Please sign in with Google' }, { status: 401 });
     }
 
-    const { template, subject, recipients } = await req.json();
+    const { template, subject, recipients, emailColumn } = await req.json();
 
     if (!template || !recipients || !Array.isArray(recipients) || recipients.length === 0) {
       return NextResponse.json({ error: 'Missing template or recipients' }, { status: 400 });
@@ -52,9 +52,10 @@ export async function POST(req) {
     const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
     for (const recipient of recipients) {
-      const recipientEmail = recipient.Email || recipient.email;
+      // Use dynamic email column if provided, otherwise fallback to common names
+      const recipientEmail = emailColumn ? recipient[emailColumn] : (recipient.Email || recipient.email);
       if (!recipientEmail) {
-        results.push({ email: 'Unknown', status: 'Failed', reason: 'No Email column found' });
+        results.push({ email: 'Unknown', status: 'Failed', reason: 'No valid Email column mapped' });
         continue;
       }
 

@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useRef } from 'react';
-import { UploadCloud, Send, FileSpreadsheet, CheckCircle, AlertCircle, Loader2, LogIn, LogOut } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { UploadCloud, Send, FileSpreadsheet, CheckCircle, AlertCircle, Loader2, LogIn, LogOut, Link2, AlertTriangle, ShieldAlert } from 'lucide-react';
 import { useSession, signIn, signOut } from "next-auth/react";
 import * as XLSX from 'xlsx';
 import styles from './page.module.css';
+import { detectColumns } from '../utils/columnDetection';
 
 export default function Home() {
   const { data: session, status: sessionStatus } = useSession();
@@ -12,12 +13,47 @@ export default function Home() {
   const [data, setData] = useState([]);
   const [columns, setColumns] = useState([]);
   const [selectedRows, setSelectedRows] = useState(new Set());
-  const [template, setTemplate] = useState('Hi {{Name}},\n\nWelcome to {{Company}}!');
-  const [subject, setSubject] = useState('Welcome to {{Company}}');
+  
+  // Mapping State
+  const [mappings, setMappings] = useState({ email: '', name: '', company: '', role: '' });
+  const [confidence, setConfidence] = useState({ email: 0, name: 0, company: 0, role: 0 });
+  const [invalidEmailsCount, setInvalidEmailsCount] = useState(0);
+
+  const [template, setTemplate] = useState('');
+  const [subject, setSubject] = useState('');
+  
   const [isUploading, setIsUploading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [status, setStatus] = useState(null); 
   const fileInputRef = useRef(null);
+
+  // Email Validation Regex
+  const isValidEmail = (email) => {
+    return email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).toLowerCase());
+  };
+
+  // Re-run validation whenever mappings.email or data changes
+  useEffect(() => {
+    if (data.length > 0 && mappings.email) {
+      let invalidCount = 0;
+      const validSelection = new Set();
+      
+      data.forEach((row, idx) => {
+        const emailVal = row[mappings.email];
+        if (isValidEmail(emailVal)) {
+          validSelection.add(idx);
+        } else {
+          invalidCount++;
+        }
+      });
+      
+      setInvalidEmailsCount(invalidCount);
+      setSelectedRows(validSelection);
+    } else if (data.length > 0 && !mappings.email) {
+      setInvalidEmailsCount(0);
+      setSelectedRows(new Set());
+    }
+  }, [mappings.email, data]);
 
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -38,9 +74,22 @@ export default function Home() {
 
           if (jsonData && jsonData.length > 0) {
             setData(jsonData);
-            setColumns(Object.keys(jsonData[0]));
-            setSelectedRows(new Set(jsonData.map((_, i) => i)));
-            setStatus({ type: 'success', message: `Successfully loaded ${jsonData.length} rows.` });
+            const headers = Object.keys(jsonData[0]);
+            setColumns(headers);
+            
+            // Smart Detection
+            const detection = detectColumns(headers);
+            setMappings(detection.mappings);
+            setConfidence(detection.confidence);
+
+            // Dynamic default template
+            const defaultName = detection.mappings.name ? `{{${detection.mappings.name}}}` : 'there';
+            const defaultCompany = detection.mappings.company ? `{{${detection.mappings.company}}}` : 'our company';
+            
+            setSubject(`Welcome to ${defaultCompany}`);
+            setTemplate(`Hi ${defaultName},\n\nWelcome to ${defaultCompany}! We are thrilled to have you.`);
+            
+            setStatus({ type: 'success', message: `Successfully loaded ${jsonData.length} rows. Columns auto-detected.` });
           } else {
             throw new Error('File is empty or invalid format');
           }
@@ -62,21 +111,35 @@ export default function Home() {
     }
   };
 
+  const handleMappingChange = (field, value) => {
+    setMappings(prev => ({ ...prev, [field]: value }));
+    setConfidence(prev => ({ ...prev, [field]: 100 })); // Set high confidence for manual override
+  };
+
   const toggleRowSelection = (index) => {
     const newSelection = new Set(selectedRows);
     if (newSelection.has(index)) {
       newSelection.delete(index);
     } else {
-      newSelection.add(index);
+      if (!mappings.email || isValidEmail(data[index][mappings.email])) {
+        newSelection.add(index);
+      }
     }
     setSelectedRows(newSelection);
   };
 
   const toggleAll = () => {
-    if (selectedRows.size === data.length) {
+    const validRows = data.filter(row => mappings.email && isValidEmail(row[mappings.email]));
+    if (selectedRows.size === validRows.length && validRows.length > 0) {
       setSelectedRows(new Set());
     } else {
-      setSelectedRows(new Set(data.map((_, i) => i)));
+      const newSelection = new Set();
+      data.forEach((row, idx) => {
+        if (mappings.email && isValidEmail(row[mappings.email])) {
+          newSelection.add(idx);
+        }
+      });
+      setSelectedRows(newSelection);
     }
   };
 
@@ -93,8 +156,13 @@ export default function Home() {
     : data[0] || {};
 
   const handleSend = async () => {
+    if (!mappings.email) {
+      setStatus({ type: 'error', message: 'Please map an Email column before sending.' });
+      return;
+    }
+
     if (selectedRows.size === 0) {
-      setStatus({ type: 'error', message: 'Please select at least one recipient.' });
+      setStatus({ type: 'error', message: 'Please select at least one valid recipient.' });
       return;
     }
 
@@ -117,7 +185,8 @@ export default function Home() {
         body: JSON.stringify({
           template,
           subject,
-          recipients
+          recipients,
+          emailColumn: mappings.email
         }),
       });
 
@@ -231,6 +300,56 @@ export default function Home() {
             )}
           </section>
 
+          {/* Mapping Section */}
+          {data.length > 0 && columns.length > 0 && (
+            <section className={styles.card}>
+              <div className={styles.cardTitle}>
+                <Link2 size={24} />
+                Smart Column Mapping
+              </div>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '15px' }}>
+                We've automatically detected these columns. You can manually adjust them if needed.
+              </p>
+              
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px', marginBottom: '15px' }}>
+                {['email', 'name', 'company', 'role'].map(field => (
+                  <div key={field} style={{ backgroundColor: 'var(--bg-color)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <span style={{ textTransform: 'capitalize', fontWeight: 'bold', fontSize: '0.9rem' }}>{field}</span>
+                      {mappings[field] && confidence[field] >= 60 && (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.75rem', backgroundColor: 'rgba(19, 115, 51, 0.1)', color: '#137333', padding: '2px 6px', borderRadius: '12px' }}>
+                          <CheckCircle size={12} /> {confidence[field] >= 80 ? 'High' : 'Good'} Match
+                        </span>
+                      )}
+                    </div>
+                    <select 
+                      value={mappings[field]} 
+                      onChange={(e) => handleMappingChange(field, e.target.value)}
+                      className={styles.input}
+                      style={{ padding: '8px', width: '100%', fontSize: '0.9rem' }}
+                    >
+                      <option value="">-- Select Column --</option>
+                      {columns.map(col => (
+                        <option key={col} value={col}>{col}</option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+
+              {!mappings.email && (
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', color: '#d93025', backgroundColor: '#fce8e6', padding: '10px', borderRadius: '6px', fontSize: '0.85rem' }}>
+                  <ShieldAlert size={16} /> Please map an Email column to continue.
+                </div>
+              )}
+              {invalidEmailsCount > 0 && mappings.email && (
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', color: '#b06000', backgroundColor: '#fef7e0', padding: '10px', borderRadius: '6px', fontSize: '0.85rem', marginTop: '10px' }}>
+                  <AlertTriangle size={16} /> {invalidEmailsCount} invalid email(s) detected and automatically skipped.
+                </div>
+              )}
+            </section>
+          )}
+
           {/* Data Table Section */}
           {data.length > 0 && (
             <section className={styles.card}>
@@ -247,8 +366,9 @@ export default function Home() {
                         <input 
                           type="checkbox" 
                           className={styles.checkbox}
-                          checked={selectedRows.size === data.length && data.length > 0}
+                          checked={selectedRows.size > 0 && selectedRows.size === data.filter(row => isValidEmail(row[mappings.email])).length}
                           onChange={toggleAll}
+                          disabled={!mappings.email}
                         />
                       </th>
                       {columns.map((col, idx) => (
@@ -257,21 +377,30 @@ export default function Home() {
                     </tr>
                   </thead>
                   <tbody>
-                    {data.slice(0, 100).map((row, idx) => (
-                      <tr key={idx}>
-                        <td>
-                          <input 
-                            type="checkbox" 
-                            className={styles.checkbox}
-                            checked={selectedRows.has(idx)}
-                            onChange={() => toggleRowSelection(idx)}
-                          />
-                        </td>
-                        {columns.map((col, colIdx) => (
-                          <td key={colIdx}>{row[col]}</td>
-                        ))}
-                      </tr>
-                    ))}
+                    {data.slice(0, 100).map((row, idx) => {
+                      const isEmailValid = mappings.email ? isValidEmail(row[mappings.email]) : false;
+                      return (
+                        <tr key={idx} style={{ opacity: isEmailValid ? 1 : 0.5 }}>
+                          <td>
+                            <input 
+                              type="checkbox" 
+                              className={styles.checkbox}
+                              checked={selectedRows.has(idx)}
+                              onChange={() => toggleRowSelection(idx)}
+                              disabled={!isEmailValid}
+                            />
+                          </td>
+                          {columns.map((col, colIdx) => (
+                            <td key={colIdx} style={{ color: col === mappings.email && !isEmailValid ? '#d93025' : 'inherit' }}>
+                              {row[col]}
+                              {col === mappings.email && !isEmailValid && (
+                                <AlertTriangle size={12} style={{ display: 'inline', marginLeft: 4, color: '#d93025' }} title="Invalid email format" />
+                              )}
+                            </td>
+                          ))}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -279,8 +408,8 @@ export default function Home() {
                 <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
                   Selected {selectedRows.size} of {data.length} rows. {data.length > 100 ? 'Showing first 100 rows.' : ''}
                 </p>
-                <button className={`${styles.button} ${styles.buttonSecondary}`} onClick={toggleAll} style={{ padding: '6px 12px', fontSize: '0.85rem' }}>
-                  {selectedRows.size === data.length ? 'Deselect All' : 'Select All'}
+                <button className={`${styles.button} ${styles.buttonSecondary}`} onClick={toggleAll} style={{ padding: '6px 12px', fontSize: '0.85rem' }} disabled={!mappings.email}>
+                  {selectedRows.size > 0 ? 'Deselect All' : 'Select All Valid'}
                 </button>
               </div>
             </section>
@@ -314,23 +443,43 @@ export default function Home() {
                   />
                 </div>
 
-                <p style={{fontSize: '0.85rem', color: 'var(--text-secondary)'}}>
-                  Available Placeholders: {columns.length > 0 ? columns.map(c => `{{${c}}}`).join(', ') : 'Upload data to see placeholders'}
-                </p>
+                <div style={{ marginTop: '15px' }}>
+                  <label style={{ fontSize: '0.9rem', fontWeight: 'bold', display: 'block', marginBottom: '8px' }}>Available Variables:</label>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                    {columns.map(c => (
+                      <span 
+                        key={c} 
+                        style={{ 
+                          fontSize: '0.8rem', 
+                          backgroundColor: 'var(--bg-color)', 
+                          padding: '4px 8px', 
+                          borderRadius: '4px', 
+                          border: '1px solid var(--border-color)',
+                          cursor: 'pointer'
+                        }}
+                        onClick={() => setTemplate(prev => prev + `{{${c}}}`)}
+                        title="Click to insert into body"
+                      >
+                        {`{{${c}}}`}
+                      </span>
+                    ))}
+                  </div>
+                  <p style={{fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '8px'}}>Click a variable to insert it into the email body.</p>
+                </div>
               </section>
 
               {/* Preview */}
               <section className={styles.card}>
                 <h2 className={styles.cardTitle}>Live Preview</h2>
                 <p style={{fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '15px'}}>
-                  Previewing row {selectedRows.size > 0 ? Array.from(selectedRows)[0] + 1 : 1}
+                  Previewing valid row {selectedRows.size > 0 ? Array.from(selectedRows)[0] + 1 : 1}
                 </p>
                 
                 <div className={styles.previewBox}>
                   <div className={styles.previewSubject}>
                     Subject: {replacePlaceholders(subject, previewData) || 'No subject'}
                   </div>
-                  <div className={styles.previewBody}>
+                  <div className={styles.previewBody} style={{ whiteSpace: 'pre-wrap' }}>
                     {replacePlaceholders(template, previewData) || 'No content'}
                   </div>
                 </div>
@@ -339,7 +488,7 @@ export default function Home() {
                   <button 
                     className={styles.button} 
                     onClick={handleSend}
-                    disabled={isSending || selectedRows.size === 0}
+                    disabled={isSending || selectedRows.size === 0 || !mappings.email}
                     style={{ width: '100%', display: 'inline-flex', justifyContent: 'center', alignItems: 'center', gap: '5px' }}
                   >
                     {isSending ? (
